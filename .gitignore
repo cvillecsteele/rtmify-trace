@@ -1,0 +1,13 @@
+# Zig build artifacts
+zig-out/
+.zig-cache/
+
+# Emacs
+*~
+\#*\#
+.\#*
+*.elc
+.dir-locals.el
+
+# macOS
+.DS_Store
