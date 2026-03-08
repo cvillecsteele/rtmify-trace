@@ -275,6 +275,10 @@ pub export fn rtmify_check_license() RtmifyStatus {
             setError("license expired", .{});
             break :blk .err_license;
         },
+        .fingerprint_mismatch => blk: {
+            setError("license is not valid on this machine", .{});
+            break :blk .err_license;
+        },
     };
 }
 

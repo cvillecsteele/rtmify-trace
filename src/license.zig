@@ -31,27 +31,39 @@ pub const LicenseRecord = struct {
     fingerprint: []const u8,
     /// Null means perpetual (never expires). Unix timestamp otherwise.
     expires_at: ?i64 = null,
+    /// Timestamp of the last successful online re-validation. Null = never validated.
+    last_validated_at: ?i64 = null,
 };
 
 pub const CheckResult = enum {
     ok,
     not_activated,
     expired,
+    fingerprint_mismatch,
 };
 
 /// Controls where the license cache is stored.
 /// Leave `dir` null to use `~/.rtmify/` (production).
 /// Set `dir` to a temp path in tests.
+/// Set `now` to override the current timestamp in tests.
 pub const Options = struct {
     dir: ?[]const u8 = null,
+    now: ?i64 = null,
 };
 
 /// 30-day grace period after subscription expiration.
 pub const GRACE_PERIOD_SECS: i64 = 30 * 24 * 60 * 60;
 
+/// Re-validate with LemonSqueezy every 7 days.
+pub const REVALIDATION_INTERVAL_SECS: i64 = 7 * 24 * 60 * 60;
+
+/// Allow up to 30 days offline before revoking if re-validation cannot reach LS.
+pub const REVALIDATION_GRACE_SECS: i64 = 30 * 24 * 60 * 60;
+
 /// LemonSqueezy API base URL.
 const LS_ACTIVATE_URL = "https://api.lemonsqueezy.com/v1/licenses/activate";
 const LS_DEACTIVATE_URL = "https://api.lemonsqueezy.com/v1/licenses/deactivate";
+const LS_VALIDATE_URL = "https://api.lemonsqueezy.com/v1/licenses/validate";
 
 // ---------------------------------------------------------------------------
 // Machine fingerprint
@@ -151,6 +163,7 @@ pub fn readCache(gpa: Allocator, opts: Options) !?LicenseRecord {
         .activated_at = parsed.value.activated_at,
         .fingerprint = try gpa.dupe(u8, parsed.value.fingerprint),
         .expires_at = parsed.value.expires_at,
+        .last_validated_at = parsed.value.last_validated_at,
     };
 }
 
@@ -197,12 +210,46 @@ pub fn checkRecord(record: LicenseRecord, now: i64) CheckResult {
 
 /// Check license status from the cached activation record.
 /// Returns .not_activated if no cache file exists.
+/// Returns .fingerprint_mismatch if the cached fingerprint differs from this machine.
+/// Performs online re-validation with LemonSqueezy every 7 days; allows 30-day offline grace.
 /// Caller does not need to free anything.
 pub fn check(gpa: Allocator, opts: Options) !CheckResult {
-    const record = try readCache(gpa, opts) orelse return .not_activated;
+    var record = try readCache(gpa, opts) orelse return .not_activated;
     defer gpa.free(record.license_key);
     defer gpa.free(record.fingerprint);
-    return checkRecord(record, std.time.timestamp());
+
+    // Layer 1: verify fingerprint matches this machine
+    var fp_buf: [64]u8 = undefined;
+    const current_fp = try machineFingerprint(&fp_buf);
+    if (!std.mem.eql(u8, current_fp, record.fingerprint)) return .fingerprint_mismatch;
+
+    // Layer 2: expiry check
+    const now = opts.now orelse std.time.timestamp();
+    const expiry = checkRecord(record, now);
+    if (expiry != .ok) return expiry;
+
+    // Layer 3: periodic online re-validation
+    const needs_revalidation = record.last_validated_at == null or
+        (now - record.last_validated_at.?) > REVALIDATION_INTERVAL_SECS;
+
+    if (needs_revalidation) {
+        callLemonSqueezyValidate(gpa, record.license_key, current_fp) catch |err| {
+            // Network/server failure: allow if within offline grace period
+            const last = record.last_validated_at orelse 0;
+            if (now - last > REVALIDATION_GRACE_SECS) {
+                std.log.warn("license re-validation failed and offline grace period exceeded: {s}", .{@errorName(err)});
+                return .not_activated;
+            }
+            return .ok;
+        };
+        // Successful re-validation: persist updated timestamp
+        record.last_validated_at = now;
+        writeCache(gpa, opts, record) catch |err| {
+            std.log.warn("failed to update license cache after re-validation: {s}", .{@errorName(err)});
+        };
+    }
+
+    return .ok;
 }
 
 /// Activate a license key by validating with LemonSqueezy and writing the cache.
@@ -213,11 +260,13 @@ pub fn activate(gpa: Allocator, opts: Options, license_key: []const u8) !void {
 
     try callLemonSqueezyActivate(gpa, license_key, fp);
 
+    const now = opts.now orelse std.time.timestamp();
     const record = LicenseRecord{
         .license_key = license_key,
-        .activated_at = std.time.timestamp(),
+        .activated_at = now,
         .fingerprint = fp,
         .expires_at = null, // LemonSqueezy expiry parsing is future work
+        .last_validated_at = now,
     };
     try writeCache(gpa, opts, record);
 }
@@ -286,6 +335,30 @@ fn callLemonSqueezyDeactivate(gpa: Allocator, license_key: []const u8, instance_
         std.log.warn("LemonSqueezy deactivation returned error: {s}", .{
             parsed.value.@"error" orelse "unknown",
         });
+    }
+}
+
+fn callLemonSqueezyValidate(gpa: Allocator, license_key: []const u8, fp: []const u8) !void {
+    const body = try std.fmt.allocPrint(gpa, "license_key={s}&instance_name={s}", .{ license_key, fp });
+    defer gpa.free(body);
+
+    const resp_bytes = try httpPost(gpa, LS_VALIDATE_URL, body);
+    defer gpa.free(resp_bytes);
+
+    const LsValidateResponse = struct {
+        valid: ?bool = null,
+        @"error": ?[]const u8 = null,
+    };
+    var parsed = try std.json.parseFromSlice(LsValidateResponse, gpa, resp_bytes, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+
+    if (parsed.value.valid != true) {
+        std.log.err("LemonSqueezy validation failed: {s}", .{
+            parsed.value.@"error" orelse "unknown error",
+        });
+        return error.LicenseInvalid;
     }
 }
 
@@ -434,13 +507,18 @@ test "writeCache and check ok" {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const tmp_path = try tmp.dir.realpath(".", &path_buf);
 
-    const opts = Options{ .dir = tmp_path };
+    var fp_buf: [64]u8 = undefined;
+    const real_fp = try machineFingerprint(&fp_buf);
+
+    const fake_now: i64 = 1_700_000_000;
+    const opts = Options{ .dir = tmp_path, .now = fake_now };
 
     const record = LicenseRecord{
         .license_key = "LIVE-0000-0000-ABCD",
-        .activated_at = std.time.timestamp(),
-        .fingerprint = "testfp",
+        .activated_at = fake_now,
+        .fingerprint = real_fp,
         .expires_at = null,
+        .last_validated_at = fake_now, // just validated; skip network re-validation
     };
     try writeCache(testing.allocator, opts, record);
 
@@ -455,13 +533,18 @@ test "writeCache then removeCache then not_activated" {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const tmp_path = try tmp.dir.realpath(".", &path_buf);
 
-    const opts = Options{ .dir = tmp_path };
+    var fp_buf: [64]u8 = undefined;
+    const real_fp = try machineFingerprint(&fp_buf);
+
+    const fake_now: i64 = 1_700_000_000;
+    const opts = Options{ .dir = tmp_path, .now = fake_now };
 
     const record = LicenseRecord{
         .license_key = "LIVE-1111-1111-1111",
-        .activated_at = 0,
-        .fingerprint = "fp",
+        .activated_at = fake_now,
+        .fingerprint = real_fp,
         .expires_at = null,
+        .last_validated_at = fake_now,
     };
     try writeCache(testing.allocator, opts, record);
     try removeCache(testing.allocator, opts);
@@ -477,17 +560,74 @@ test "check expired subscription" {
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const tmp_path = try tmp.dir.realpath(".", &path_buf);
 
-    const opts = Options{ .dir = tmp_path };
-    const forty_days_ago = std.time.timestamp() - 40 * 24 * 60 * 60;
+    var fp_buf: [64]u8 = undefined;
+    const real_fp = try machineFingerprint(&fp_buf);
+
+    const fake_now: i64 = 1_700_000_000;
+    const forty_days: i64 = 40 * 24 * 60 * 60;
+    const opts = Options{ .dir = tmp_path, .now = fake_now };
 
     const record = LicenseRecord{
         .license_key = "SUB-0001",
-        .activated_at = forty_days_ago - 100,
-        .fingerprint = "fp",
-        .expires_at = forty_days_ago,
+        .activated_at = fake_now - forty_days - 100,
+        .fingerprint = real_fp,
+        .expires_at = fake_now - forty_days,
+        .last_validated_at = fake_now, // expiry check comes before re-validation
     };
     try writeCache(testing.allocator, opts, record);
 
     const result = try check(testing.allocator, opts);
     try testing.expectEqual(CheckResult.expired, result);
+}
+
+test "check returns fingerprint_mismatch when stored fingerprint differs" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp.dir.realpath(".", &path_buf);
+
+    const fake_now: i64 = 1_700_000_000;
+    const opts = Options{ .dir = tmp_path, .now = fake_now };
+
+    const record = LicenseRecord{
+        .license_key = "REAL-KEY-0001",
+        .activated_at = fake_now,
+        .fingerprint = "0000000000000000000000000000000000000000000000000000000000000000",
+        .expires_at = null,
+        .last_validated_at = fake_now,
+    };
+    try writeCache(testing.allocator, opts, record);
+
+    const result = try check(testing.allocator, opts);
+    try testing.expectEqual(CheckResult.fingerprint_mismatch, result);
+}
+
+test "check skips re-validation when recently validated" {
+    // If last_validated_at is recent, check() must return .ok without hitting
+    // the network (which would fail with a fake key in the test environment).
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp.dir.realpath(".", &path_buf);
+
+    var fp_buf: [64]u8 = undefined;
+    const real_fp = try machineFingerprint(&fp_buf);
+
+    const fake_now: i64 = 1_700_000_000;
+    const one_day: i64 = 24 * 60 * 60;
+    const opts = Options{ .dir = tmp_path, .now = fake_now };
+
+    const record = LicenseRecord{
+        .license_key = "FAKE-KEY-NOT-REAL",
+        .activated_at = fake_now - one_day,
+        .fingerprint = real_fp,
+        .expires_at = null,
+        .last_validated_at = fake_now - one_day, // 1 day ago < 7-day interval
+    };
+    try writeCache(testing.allocator, opts, record);
+
+    const result = try check(testing.allocator, opts);
+    try testing.expectEqual(CheckResult.ok, result);
 }

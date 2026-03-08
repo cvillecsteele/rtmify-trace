@@ -22,6 +22,7 @@ Options:
   --project <name>            Project name for report header (default: filename)
   --activate <key>            Activate license key for this machine
   --deactivate                Deactivate license on this machine
+  --gaps-json <path>          Write diagnostics and gap list as JSON
   --strict                    Exit with gap count when gaps are found (for CI)
   --version                   Print version and exit
   --help                      Print this help and exit
@@ -50,12 +51,16 @@ Requires [Zig 0.15.2](https://ziglang.org/download/).
 ```sh
 zig build              # debug binary + librtmify.a + librtmify.dylib
 zig build -Doptimize=ReleaseSafe   # optimised native binary
-zig build test         # run all 71 unit tests
+zig build test         # run all 131 unit tests
 zig build release      # cross-compile for all 6 distribution targets
 zig build run -- requirements.xlsx --format pdf
 ```
 
-### Release targets
+### Cross-compilation
+
+`zig build release` cross-compiles for all six targets in one command, from any
+host platform (macOS, Linux, or Windows). No cross-toolchains, SDKs, or Docker
+required — Zig bundles everything it needs.
 
 `zig build release` produces binaries in `zig-out/release/`:
 
@@ -94,8 +99,10 @@ rtmify-trace --activate XXXX-XXXX-XXXX-XXXX
 ```
 
 This validates the key online and writes a cache to `~/.rtmify/license.json`.
-Subsequent runs are fully offline. A 30-day grace period applies to
-subscription licenses after expiration.
+The license is bound to the activating machine via a hardware fingerprint.
+Subsequent runs are offline. The tool silently re-validates with LemonSqueezy
+every 7 days; if the server is unreachable, a 30-day offline grace period
+applies before the license is considered lapsed.
 
 ## C ABI
 
@@ -107,6 +114,7 @@ RtmifyStatus rtmify_generate(const RtmifyGraph*, const char* format,
                               const char* output_path, const char* project_name);
 int          rtmify_gap_count(const RtmifyGraph*);
 const char*  rtmify_last_error(void);
+int          rtmify_warning_count(void);
 void         rtmify_free(RtmifyGraph*);
 
 RtmifyStatus rtmify_activate_license(const char* license_key);
@@ -134,5 +142,5 @@ rtmify-trace/
 ├── docs/
 │   └── architecture.md deep-dive on design decisions and module internals
 └── test/
-    └── fixtures/       XLSX test files (future)
+    └── fixtures/       XLSX test files and golden output
 ```
