@@ -7,6 +7,8 @@ const render_md = rtmify.render_md;
 const render_docx = rtmify.render_docx;
 const render_pdf = rtmify.render_pdf;
 const license = rtmify.license;
+const diagnostic = rtmify.diagnostic;
+const Diagnostics = diagnostic.Diagnostics;
 
 const VERSION = "0.1.0";
 
@@ -35,6 +37,7 @@ pub const Args = struct {
     strict: bool = false,
     version: bool = false,
     help: bool = false,
+    gaps_json: ?[]const u8 = null,
 };
 
 pub const ParseError = error{
@@ -82,6 +85,10 @@ pub fn parseArgs(tokens: []const []const u8) ParseError!Args {
             i += 1;
             if (i >= tokens.len) return error.MissingValue;
             args.output = tokens[i];
+        } else if (std.mem.eql(u8, tok, "--gaps-json")) {
+            i += 1;
+            if (i >= tokens.len) return error.MissingValue;
+            args.gaps_json = tokens[i];
         } else if (std.mem.eql(u8, tok, "--project")) {
             i += 1;
             if (i >= tokens.len) return error.MissingValue;
@@ -110,6 +117,7 @@ const HELP =
     \\  --format <md|docx|pdf|all>  Output format (default: docx)
     \\  --output <path>          Output file or directory (default: same dir as input)
     \\  --project <name>         Project name for report header (default: filename)
+    \\  --gaps-json <path>       Write diagnostics JSON to path
     \\  --activate <key>         Activate license key for this machine
     \\  --deactivate             Deactivate license on this machine
     \\  --strict                 Exit with gap count when gaps are found (for CI)
@@ -120,6 +128,7 @@ const HELP =
     \\  rtmify-trace requirements.xlsx
     \\  rtmify-trace requirements.xlsx --format all --output ./reports/
     \\  rtmify-trace requirements.xlsx --format md --project "Ventilator v2.1"
+    \\  rtmify-trace requirements.xlsx --gaps-json gaps.json
     \\  rtmify-trace --activate XXXX-XXXX-XXXX-XXXX
     \\
     \\Exit codes:
@@ -361,22 +370,31 @@ fn run(gpa: std.mem.Allocator, args: Args) !u8 {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const sheets = xlsx.parse(alloc, input_path) catch |err| switch (err) {
-        error.FileNotFound => {
-            try stderr.print("Error: file not found: {s}\n", .{input_path});
-            return EXIT_INPUT;
-        },
-        else => {
-            try stderr.print("Error: could not read {s}: {s}\n", .{ input_path, @errorName(err) });
-            return EXIT_INPUT;
-        },
+    var diag = Diagnostics.init(gpa);
+    defer diag.deinit();
+
+    const sheets = xlsx.parseValidated(alloc, input_path, &diag) catch |err| {
+        try diag.printSummary(stderr);
+        switch (err) {
+            error.FileNotFound => {
+                try stderr.print("Error: file not found: {s}\n", .{input_path});
+            },
+            else => {
+                try stderr.print("Error: could not read {s}: {s}\n", .{ input_path, @errorName(err) });
+            },
+        }
+        return EXIT_INPUT;
     };
 
     var g = graph.Graph.init(alloc);
-    schema.ingest(&g, sheets) catch |err| {
+    _ = schema.ingestValidated(&g, sheets, &diag) catch |err| {
+        try diag.printSummary(stderr);
         try stderr.print("Error: failed to ingest spreadsheet: {s}\n", .{@errorName(err)});
         return EXIT_INPUT;
     };
+
+    try diag.printSummary(stderr);
+    if (args.gaps_json) |jp| try diag.writeJson(jp, gpa);
 
     const gaps = try gapCount(&g, gpa);
     const project_name = args.project orelse stem(input_path);
@@ -543,6 +561,15 @@ test "parseArgs invalid format" {
 
 test "parseArgs multiple positionals" {
     try testing.expectError(error.ConflictingOptions, parseArgs(&.{ "a.xlsx", "b.xlsx" }));
+}
+
+test "parseArgs --gaps-json" {
+    const args = try parseArgs(&.{ "input.xlsx", "--gaps-json", "/tmp/gaps.json" });
+    try testing.expectEqualStrings("/tmp/gaps.json", args.gaps_json.?);
+}
+
+test "parseArgs --gaps-json missing value" {
+    try testing.expectError(error.MissingValue, parseArgs(&.{"--gaps-json"}));
 }
 
 test "stem helper" {

@@ -12,6 +12,7 @@ pub const render_md = @import("render_md.zig");
 pub const render_docx = @import("render_docx.zig");
 pub const license = @import("license.zig");
 pub const render_pdf = @import("render_pdf.zig");
+pub const diagnostic = @import("diagnostic.zig");
 
 // ---------------------------------------------------------------------------
 // C ABI status codes
@@ -36,10 +37,15 @@ pub const RtmifyGraph = struct {
 };
 
 // ---------------------------------------------------------------------------
-// Thread-local last-error buffer
+// Thread-local last-error buffer and warning count
 // ---------------------------------------------------------------------------
 
 threadlocal var last_error_buf: [512]u8 = .{0} ** 512;
+threadlocal var last_warning_count: c_int = 0;
+
+pub export fn rtmify_warning_count() c_int {
+    return last_warning_count;
+}
 
 fn setError(comptime fmt: []const u8, args: anytype) void {
     const written = std.fmt.bufPrint(last_error_buf[0 .. last_error_buf.len - 1], fmt, args) catch
@@ -60,7 +66,11 @@ fn loadSheets(handle: *RtmifyGraph, path: []const u8) RtmifyStatus {
     var parse_arena = std.heap.ArenaAllocator.init(gpa);
     defer parse_arena.deinit();
 
-    const sheets = xlsx.parse(parse_arena.allocator(), path) catch |err| {
+    var diag = diagnostic.Diagnostics.init(gpa);
+    defer diag.deinit();
+
+    const sheets = xlsx.parseValidated(parse_arena.allocator(), path, &diag) catch |err| {
+        last_warning_count = @intCast(diag.warning_count);
         switch (err) {
             error.FileNotFound => {
                 setError("file not found: {s}", .{path});
@@ -73,11 +83,13 @@ fn loadSheets(handle: *RtmifyGraph, path: []const u8) RtmifyStatus {
         }
     };
 
-    schema.ingest(&handle.g, sheets) catch |err| {
+    _ = schema.ingestValidated(&handle.g, sheets, &diag) catch |err| {
+        last_warning_count = @intCast(diag.warning_count);
         setError("failed to ingest spreadsheet: {s}", .{@errorName(err)});
         return .err_missing_tab;
     };
 
+    last_warning_count = @intCast(diag.warning_count);
     return .ok;
 }
 
@@ -292,6 +304,7 @@ test "lib imports" {
     _ = render_docx;
     _ = license;
     _ = render_pdf;
+    _ = diagnostic;
 }
 
 test "rtmify_last_error is valid pointer" {
