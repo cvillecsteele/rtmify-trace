@@ -10,7 +10,7 @@ const license = rtmify.license;
 const diagnostic = rtmify.diagnostic;
 const Diagnostics = diagnostic.Diagnostics;
 
-const VERSION = "0.1.0";
+const VERSION = @import("build_options").version;
 
 // ---------------------------------------------------------------------------
 // Exit codes
@@ -326,9 +326,13 @@ fn run(gpa: std.mem.Allocator, args: Args) !u8 {
     }
 
     if (args.activate) |key| {
-        license.activate(gpa, .{}, key) catch |err| {
-            try stderr.print("Error: license activation failed: {s}\n", .{@errorName(err)});
-            try stderr.writeAll("Check your key and internet connection, then try again.\n");
+        license.activate(gpa, .{}, key) catch {
+            const ls_msg = license.lastLsError();
+            if (ls_msg.len > 0) {
+                try stderr.print("Error: {s}\n", .{ls_msg});
+            } else {
+                try stderr.writeAll("Error: license activation failed. Check your key and internet connection.\n");
+            }
             return EXIT_LICENSE;
         };
         try stdout.print("License activated successfully.\n", .{});
@@ -355,6 +359,11 @@ fn run(gpa: std.mem.Allocator, args: Args) !u8 {
         .expired => {
             try stderr.writeAll("Error: license expired (grace period elapsed).\n");
             try stderr.writeAll("Visit https://rtmify.io to renew your subscription.\n");
+            return EXIT_LICENSE;
+        },
+        .fingerprint_mismatch => {
+            try stderr.writeAll("Error: this license is not valid on this machine.\n");
+            try stderr.writeAll("To move your license, deactivate on the old machine first.\n");
             return EXIT_LICENSE;
         },
     }

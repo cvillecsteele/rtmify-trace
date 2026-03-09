@@ -19,6 +19,15 @@ const release_targets = [_]ReleaseTarget{
 };
 
 pub fn build(b: *std.Build) void {
+    // -----------------------------------------------------------------------
+    // Version: single source of truth — bump this before each release
+    // Format: YYYYMMDD-[a-z]  e.g. "20260308-a"
+    // -----------------------------------------------------------------------
+    const version = "20260308-a";
+    const opts = b.addOptions();
+    opts.addOption([]const u8, "version", version);
+    const opts_mod = opts.createModule();
+
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
@@ -35,6 +44,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "rtmify", .module = lib_mod },
+                .{ .name = "build_options", .module = opts_mod },
             },
         }),
     });
@@ -84,6 +94,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
             .imports = &.{
                 .{ .name = "rtmify", .module = lib_mod },
+                .{ .name = "build_options", .module = opts_mod },
             },
         }),
     });
@@ -119,6 +130,7 @@ pub fn build(b: *std.Build) void {
                 .optimize = .ReleaseSafe,
                 .imports = &.{
                     .{ .name = "rtmify", .module = cross_lib },
+                    .{ .name = "build_options", .module = opts_mod },
                 },
             }),
         });

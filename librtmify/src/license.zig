@@ -60,6 +60,28 @@ pub const REVALIDATION_INTERVAL_SECS: i64 = 7 * 24 * 60 * 60;
 /// Allow up to 30 days offline before revoking if re-validation cannot reach LS.
 pub const REVALIDATION_GRACE_SECS: i64 = 30 * 24 * 60 * 60;
 
+// ---------------------------------------------------------------------------
+// Thread-local LemonSqueezy error message (set before returning any error)
+// ---------------------------------------------------------------------------
+
+threadlocal var ls_error_buf: [256]u8 = .{0} ** 256;
+
+/// Returns the human-readable error string from the last failed LS API call.
+/// Empty string if no error has been recorded.
+pub fn lastLsError() []const u8 {
+    return std.mem.sliceTo(&ls_error_buf, 0);
+}
+
+fn setLsError(msg: []const u8) void {
+    const n = @min(msg.len, ls_error_buf.len - 1);
+    @memcpy(ls_error_buf[0..n], msg[0..n]);
+    ls_error_buf[n] = 0;
+}
+
+// ---------------------------------------------------------------------------
+// LemonSqueezy API URLs
+// ---------------------------------------------------------------------------
+
 /// LemonSqueezy API base URL.
 const LS_ACTIVATE_URL = "https://api.lemonsqueezy.com/v1/licenses/activate";
 const LS_DEACTIVATE_URL = "https://api.lemonsqueezy.com/v1/licenses/deactivate";
@@ -312,9 +334,7 @@ fn callLemonSqueezyActivate(gpa: Allocator, license_key: []const u8, fp: []const
     defer parsed.deinit();
 
     if (parsed.value.activated == false or parsed.value.@"error" != null) {
-        std.log.err("LemonSqueezy activation failed: {s}", .{
-            parsed.value.@"error" orelse "unknown error",
-        });
+        setLsError(parsed.value.@"error" orelse "License activation failed (unknown error)");
         return error.LicenseActivationFailed;
     }
 }
@@ -355,9 +375,7 @@ fn callLemonSqueezyValidate(gpa: Allocator, license_key: []const u8, fp: []const
     defer parsed.deinit();
 
     if (parsed.value.valid != true) {
-        std.log.err("LemonSqueezy validation failed: {s}", .{
-            parsed.value.@"error" orelse "unknown error",
-        });
+        setLsError(parsed.value.@"error" orelse "License validation failed (unknown error)");
         return error.LicenseInvalid;
     }
 }
