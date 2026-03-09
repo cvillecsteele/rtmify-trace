@@ -73,6 +73,34 @@ pub fn build(b: *std.Build) void {
     static_lib.bundle_compiler_rt = true;
     b.installArtifact(static_lib);
 
+    // ---------------------------------------------------------------------------
+    // Win32 GUI step: zig build win-gui -Dtarget=x86_64-windows -Doptimize=ReleaseSafe
+    // Cross-compiles from any host; requires -Dtarget=x86_64-windows (or aarch64-windows)
+    // ---------------------------------------------------------------------------
+    const win_gui_exe = b.addExecutable(.{
+        .name = "rtmify-trace",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("../windows/src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    win_gui_exe.linkLibrary(static_lib);
+    win_gui_exe.subsystem = .Windows;
+    // Windows system libraries required by librtmify (networking + TLS for license checks)
+    win_gui_exe.linkSystemLibrary("ws2_32");
+    win_gui_exe.linkSystemLibrary("crypt32");
+    win_gui_exe.linkSystemLibrary("advapi32"); // RtlGenRandom (SystemFunction036)
+    // Embed icon, version info, and manifest from the .rc resource file.
+    // Requires Zig 0.12+ (bundles llvm-rc for cross-compilation).
+    // If addWin32ResourceFile is unavailable, comment out the next line and
+    // embed the manifest via exe.addWin32ManifestFile() or linker flags.
+    win_gui_exe.addWin32ResourceFile(.{ .file = b.path("../windows/res/rtmify.rc") });
+
+    const win_gui_step = b.step("win-gui", "Build rtmify-trace.exe (use -Dtarget=x86_64-windows)");
+    const install_win_gui = b.addInstallArtifact(win_gui_exe, .{});
+    win_gui_step.dependOn(&install_win_gui.step);
+
     const run_cmd = b.addRunArtifact(exe);
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| run_cmd.addArgs(args);

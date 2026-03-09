@@ -1,0 +1,34 @@
+// rtmify.rc — icon, manifest, and version info for rtmify-trace.exe
+#include <winver.h>
+
+1 ICON "rtmify.ico"
+1 RT_MANIFEST "rtmify.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION    1,0,0,0
+PRODUCTVERSION 1,0,0,0
+FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+FILEFLAGS      0
+FILEOS         VOS_NT_WINDOWS32
+FILETYPE       VFT_APP
+FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904E4"
+        BEGIN
+            VALUE "CompanyName",      "RTMify"
+            VALUE "FileDescription",  "RTMify Trace \x2014 Requirements Traceability Matrix Generator"
+            VALUE "FileVersion",      "1.0.0.0"
+            VALUE "InternalName",     "rtmify-trace"
+            VALUE "LegalCopyright",   "\xa9 2026 RTMify"
+            VALUE "OriginalFilename", "rtmify-trace.exe"
+            VALUE "ProductName",      "RTMify Trace"
+            VALUE "ProductVersion",   "1.0.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 0x04E4
+    END
+END
