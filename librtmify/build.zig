@@ -70,6 +70,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    static_lib.bundle_compiler_rt = true;
     b.installArtifact(static_lib);
 
     const run_cmd = b.addRunArtifact(exe);

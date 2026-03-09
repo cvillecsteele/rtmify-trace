@@ -1,0 +1,49 @@
+# ── Built library (always regenerated via `make lib`) ────────────────────────
+lib/
+
+# ── Xcode build output ────────────────────────────────────────────────────────
+.build/
+DerivedData/
+build/
+
+# ── Xcode user-specific state ─────────────────────────────────────────────────
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcworkspace/xcshareddata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+
+# ── Xcode generated / temporary files ─────────────────────────────────────────
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM/
+timeline.xctimeline
+playground.xcworkspace
+
+# ── Swift Package Manager (not used here, but guard against accidental init) ──
+.swiftpm/
+.build/
+
+# ── macOS metadata ─────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# ── Instruments / Profiling ───────────────────────────────────────────────────
+*.trace
+
+# ── Fastlane (if added later) ─────────────────────────────────────────────────
+fastlane/report.xml
+fastlane/Preview.html
+fastlane/screenshots/**/*.png
+fastlane/test_output/
+
+# ── Secrets / environment ─────────────────────────────────────────────────────
+.env
+*.pem
+*.p12
+*.mobileprovision
+*.provisionprofile
+ExportOptions.plist

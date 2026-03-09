@@ -51,6 +51,11 @@ pub const Options = struct {
     now: ?i64 = null,
 };
 
+/// Development bypass key — skips all LemonSqueezy network calls.
+/// Activates instantly on any machine without a real license.
+/// For local development and testing only; never distribute as a valid key.
+pub const DEV_KEY = "RTMIFY-DEV-0000-0000";
+
 /// 30-day grace period after subscription expiration.
 pub const GRACE_PERIOD_SECS: i64 = 30 * 24 * 60 * 60;
 
@@ -240,6 +245,9 @@ pub fn check(gpa: Allocator, opts: Options) !CheckResult {
     defer gpa.free(record.license_key);
     defer gpa.free(record.fingerprint);
 
+    // Dev key: skip fingerprint and revalidation — always ok.
+    if (std.mem.eql(u8, record.license_key, DEV_KEY)) return .ok;
+
     // Layer 1: verify fingerprint matches this machine
     var fp_buf: [64]u8 = undefined;
     const current_fp = try machineFingerprint(&fp_buf);
@@ -276,19 +284,23 @@ pub fn check(gpa: Allocator, opts: Options) !CheckResult {
 
 /// Activate a license key by validating with LemonSqueezy and writing the cache.
 /// Requires network access.
+/// Exception: DEV_KEY is accepted locally without any network call.
 pub fn activate(gpa: Allocator, opts: Options, license_key: []const u8) !void {
     var fp_buf: [64]u8 = undefined;
     const fp = try machineFingerprint(&fp_buf);
-
-    try callLemonSqueezyActivate(gpa, license_key, fp);
-
     const now = opts.now orelse std.time.timestamp();
+
+    if (!std.mem.eql(u8, license_key, DEV_KEY)) {
+        try callLemonSqueezyActivate(gpa, license_key, fp);
+    }
+
     const record = LicenseRecord{
         .license_key = license_key,
         .activated_at = now,
         .fingerprint = fp,
-        .expires_at = null, // LemonSqueezy expiry parsing is future work
-        .last_validated_at = now,
+        .expires_at = null,
+        // Use max timestamp so DEV_KEY never triggers online re-validation.
+        .last_validated_at = std.math.maxInt(i64),
     };
     try writeCache(gpa, opts, record);
 }
@@ -619,6 +631,20 @@ test "check returns fingerprint_mismatch when stored fingerprint differs" {
 
     const result = try check(testing.allocator, opts);
     try testing.expectEqual(CheckResult.fingerprint_mismatch, result);
+}
+
+test "dev key activates and checks ok without network" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = try tmp.dir.realpath(".", &path_buf);
+    const opts = Options{ .dir = tmp_path, .now = 1_700_000_000 };
+
+    try activate(testing.allocator, opts, DEV_KEY);
+
+    const result = try check(testing.allocator, opts);
+    try testing.expectEqual(CheckResult.ok, result);
 }
 
 test "check skips re-validation when recently validated" {
